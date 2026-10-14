@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Webpage HTML Downloader</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Webpage HTML Downloader</h1>
+      <p class="subtitle">Save the HTML source of a public webpage to your computer.</p>
+    </header>
+
+    <form id="download-form" class="card" novalidate>
+      <label for="url-input">Webpage URL</label>
+      <div class="input-row">
+        <input id="url-input" name="url" type="url" inputmode="url" autocomplete="url"
+               placeholder="https://example.com/page" required spellcheck="false">
+        <button id="download-btn" type="submit" class="btn primary">Download</button>
+      </div>
+
+      <fieldset class="modes">
+        <legend>Mode</legend>
+        <label class="mode">
+          <input type="radio" name="mode" value="http" checked>
+          <span><strong>Raw HTML</strong> &mdash; the exact HTML the server sends (fast, with byte-level progress).</span>
+        </label>
+        <label class="mode {% if not app_config.render_available %}disabled{% endif %}">
+          <input type="radio" name="mode" value="rendered" {% if not app_config.render_available %}disabled{% endif %}>
+          <span><strong>Rendered DOM</strong> &mdash; HTML after JavaScript runs in a headless browser (Playwright).
+            {% if not app_config.render_available %}
+              <em class="muted">Unavailable: {% if not app_config.playwright_installed %}Playwright is not installed{% else %}set ENABLE_BROWSER_RENDERING=true{% endif %}. See README.</em>
+            {% endif %}
+          </span>
+        </label>
+      </fieldset>
+      <p id="field-error" class="field-error" role="alert" hidden></p>
+    </form>
+
+    <section id="progress-card" class="card" hidden aria-live="polite">
+      <div class="status-row">
+        <span id="status-badge" class="badge">Initializing</span>
+        <span id="status-message" class="status-message"></span>
+      </div>
+      <div id="progress-track" class="progress-track" role="progressbar"
+           aria-label="Download progress" aria-valuemin="0" aria-valuemax="100">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="progress-percent"></span>
+        <span id="progress-bytes"></span>
+      </div>
+      <p id="job-url" class="muted small"></p>
+      <div class="actions">
+        <button id="cancel-btn" type="button" class="btn secondary">Cancel</button>
+      </div>
+    </section>
+
+    <section id="error-card" class="card error" hidden role="alert">
+      <h2>Download failed</h2>
+      <p id="error-message"></p>
+    </section>
+
+    <section id="result-card" class="card success" hidden>
+      <h2>Download complete</h2>
+      <dl class="result">
+        <dt>Filename</dt><dd id="result-filename"></dd>
+        <dt>File size</dt><dd id="result-size"></dd>
+        <dt>Saved to</dt><dd id="result-path" class="path"></dd>
+        <dt>Final URL</dt><dd id="result-final-url" class="path"></dd>
+        <dt>Content type</dt><dd id="result-type"></dd>
+      </dl>
+      <a id="save-btn" class="btn primary" href="#" download>Download HTML file</a>
+    </section>
+
+    <aside class="card note">
+      <h2>What gets downloaded?</h2>
+      <p>
+        This tool saves <strong>only the HTML document</strong> returned for the URL. A webpage usually also
+        relies on CSS stylesheets, JavaScript files, images, fonts and API responses that are fetched
+        separately by the browser &mdash; those are <strong>not</strong> downloaded, so the saved file may look
+        unstyled or incomplete when opened offline.
+      </p>
+      <p>
+        In <em>Raw HTML</em> mode, content that the page builds with JavaScript after loading will be missing.
+        <em>Rendered DOM</em> mode (when enabled) captures the HTML after scripts run, but still does not save
+        the separate asset files.
+      </p>
+      <p class="muted small">
+        Only public http/https sites can be fetched; private and local network addresses are blocked.
+        The tool does not bypass logins, CAPTCHAs or paywalls &mdash; please respect each site's terms of use.
+        Size limit: {{ (app_config.max_download_bytes / 1048576) | round(1) }} MB.
+      </p>
+    </aside>
+  </main>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
