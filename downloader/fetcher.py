@@ -57,6 +57,20 @@ def http_status_error(status: int, reason: str, retry_after: str | None = None) 
     return DownloadError(msg.strip(), code=f"http_{status}", http_status=status)
 
 
+def is_bot_challenge(response: requests.Response) -> bool:
+    """True if the response is Cloudflare's browser-verification ("Just a moment...") page."""
+    return response.headers.get("cf-mitigated", "").strip().lower() == "challenge"
+
+
+def bot_challenge_error(status: int, settings: Settings) -> DownloadError:
+    msg = ("This website is protected by a Cloudflare browser check, which only a real browser "
+           "can pass, so Raw HTML mode cannot download it. Try Rendered DOM mode instead.")
+    if not settings.enable_browser_rendering:
+        msg += (" Rendered DOM mode is currently disabled: install Playwright and restart the app "
+                "with ENABLE_BROWSER_RENDERING=true (see README).")
+    return DownloadError(msg, code="bot_challenge", http_status=status)
+
+
 def _parse_content_length(value: str | None) -> int | None:
     if value is None:
         return None
@@ -163,6 +177,8 @@ def run_http_download(job: Job, settings: Settings) -> None:
         settings.download_dir.mkdir(parents=True, exist_ok=True)
         response, final_url = _open_response(session, job, settings)
         with response:
+            if response.status_code >= 400 and is_bot_challenge(response):
+                raise bot_challenge_error(response.status_code, settings)
             if response.status_code >= 400:
                 raise http_status_error(response.status_code, response.reason or "",
                                         response.headers.get("Retry-After"))

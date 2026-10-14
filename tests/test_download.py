@@ -108,6 +108,18 @@ def test_http_errors(server, settings, path, code, fragment):
     assert_no_files(settings)
 
 
+@pytest.mark.parametrize("rendering_enabled", [True, False])
+def test_cloudflare_challenge_suggests_rendered_mode(server, settings, rendering_enabled):
+    settings = dataclasses.replace(settings, enable_browser_rendering=rendering_enabled)
+    job = download(server + "/cf-challenge", settings)
+    assert job.status == "failed"
+    assert job.error_code == "bot_challenge"
+    assert job.http_status == 403
+    assert "Cloudflare" in job.error and "Try Rendered DOM mode" in job.error
+    assert ("ENABLE_BROWSER_RENDERING" in job.error) is not rendering_enabled
+    assert_no_files(settings)
+
+
 def test_429_includes_retry_after(server, settings):
     job = download(server + "/429", settings)
     assert "120" in job.error

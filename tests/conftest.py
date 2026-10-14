@@ -59,6 +59,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"nope")
         elif path == "/403":
             self._send(403, b"forbidden")
+        elif path == "/cf-challenge":
+            self._send(403, b"<html><title>Just a moment...</title></html>",
+                       headers={"Server": "cloudflare", "cf-mitigated": "challenge"})
         elif path == "/429":
             self._send(429, b"slow down", headers={"Retry-After": "120"})
         elif path == "/500":
