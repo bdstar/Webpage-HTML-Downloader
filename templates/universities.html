@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Universities Importer — Global Study Net</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <main class="container wide">
+    <nav class="topnav">
+      <a href="{{ url_for('index') }}">Webpage downloader</a>
+      <a href="{{ url_for('programmes.dashboard') }}">Programme importer</a>
+      <a href="{{ url_for('universities.dashboard') }}" aria-current="page">Universities importer</a>
+    </nav>
+    <header>
+      <h1>Universities Importer</h1>
+      <p class="subtitle">Build one JSON file per university from university profile pages you saved while
+        browsing Mastersportal and Bachelorsportal.</p>
+    </header>
+
+    <section class="card note">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li>Open a university's profile page in your normal browser and save it with <kbd>Ctrl</kbd>+<kbd>S</kbd>
+          into the import folder.</li>
+        <li>Choose the category the pages belong to and press <strong>Start Import</strong>.</li>
+        <li>Each page is read locally, checked, and written to a folder for the university's country inside the
+          export folder: <span class="path">export\UK\universities\&lt;University&gt;.json</span> for the United
+          Kingdom, <span class="path">export\France\universities\&lt;University&gt;.json</span> for France, and so on.
+          Master's and Bachelor's imports of the same university share one file.
+          Missing values are stored as <code>null</code>; a missing value never erases one saved earlier.</li>
+      </ol>
+      <p class="muted small">The importer never contacts the portals. Pages that show a Cloudflare or CAPTCHA check
+        are reported as <em>blocked</em> and must be saved again from a normal browser session.</p>
+    </section>
+
+    <form id="start-form" class="card" novalidate>
+      <h2>Start an import</h2>
+      <div class="form-grid">
+        <label for="category">University Category</label>
+        <select id="category" name="category">
+          <option value="master">UK / Master's</option>
+          <option value="bachelor">UK / Bachelor's</option>
+        </select>
+
+        <label for="folder">Import Folder</label>
+        <div class="input-row folder-row">
+          <input id="folder" name="folder" type="text" spellcheck="false" autocomplete="off"
+                 {% if not folder_selection %}readonly{% endif %}>
+          <button id="browse-btn" type="button" class="btn secondary"
+                  {% if not folder_selection %}disabled{% endif %}>Browse…</button>
+          <button id="reset-folder-btn" type="button" class="btn secondary">Default</button>
+        </div>
+        <span></span>
+        <p id="folder-status" class="small folder-status" aria-live="polite"></p>
+
+        <label for="export-folder">Export Folder</label>
+        <div class="input-row folder-row">
+          <input id="export-folder" name="export_folder" type="text" spellcheck="false" autocomplete="off"
+                 {% if not folder_selection %}readonly{% endif %}>
+          <button id="export-browse-btn" type="button" class="btn secondary"
+                  {% if not folder_selection %}disabled{% endif %}>Browse…</button>
+          <button id="export-reset-btn" type="button" class="btn secondary">Default</button>
+        </div>
+        <span></span>
+        <p id="export-status" class="small folder-status" aria-live="polite"></p>
+
+        <label for="policy">Existing JSON files</label>
+        <select id="policy" name="policy"></select>
+
+        <span></span>
+        <label class="check"><input id="delete-html" type="checkbox">
+          Delete each HTML file after its data has been saved and verified.</label>
+      </div>
+      {% if not folder_selection %}
+      <p class="muted small">Choosing other import or export folders is only possible on the computer running the app.</p>
+      {% endif %}
+      <div class="actions">
+        <button id="start-btn" type="submit" class="btn primary">Start Import</button>
+      </div>
+      <p id="form-error" class="field-error" role="alert" hidden></p>
+    </form>
+
+    <section id="task-card" class="card" aria-live="polite" hidden>
+      <div class="status-row">
+        <h2 id="task-title">Import task</h2>
+        <span id="task-badge" class="badge">Queued</span>
+        <span id="task-stage" class="status-message"></span>
+      </div>
+      <div id="task-track" class="progress-track" role="progressbar" aria-label="Import progress"
+           aria-valuemin="0" aria-valuemax="100"><div id="task-fill" class="progress-fill"></div></div>
+      <div class="progress-meta">
+        <span id="task-percent"></span>
+        <span id="task-timing"></span>
+      </div>
+      <p id="task-action" class="small"></p>
+      <p id="task-success" class="small muted"></p>
+      <p id="task-error" class="field-error small" hidden></p>
+      <dl class="stats" id="task-stats"></dl>
+      <div class="actions buttons">
+        <button type="button" class="btn secondary" data-action="pause">Pause</button>
+        <button type="button" class="btn secondary" data-action="resume">Resume</button>
+        <button type="button" class="btn secondary" data-action="stop">Stop</button>
+        <button type="button" class="btn secondary" data-action="retry">Retry failed</button>
+        <button type="button" class="btn secondary" id="refresh-btn">Refresh</button>
+        <a class="btn secondary" id="log-json" href="#">Export log (JSON)</a>
+        <a class="btn secondary" id="log-csv" href="#">Export log (CSV)</a>
+      </div>
+      <details id="files-box" open>
+        <summary>Files in this task</summary>
+        <table class="table" id="files-table">
+          <thead><tr><th>File</th><th>University</th><th>Status</th><th>Missing fields</th><th>Details</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </details>
+      <details id="events-box" open>
+        <summary>Activity log</summary>
+        <ol id="events" class="events"></ol>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="status-row">
+        <h2>University datasets</h2>
+        <button type="button" class="btn secondary small-btn" id="history-btn">View history</button>
+      </div>
+      <div id="datasets" class="datasets"></div>
+    </section>
+
+    <section class="card" id="history-card" hidden>
+      <h2>Task history</h2>
+      <table class="table">
+        <thead><tr><th>Created</th><th>Category</th><th>Status</th><th>Files</th><th>Universities</th><th></th></tr></thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </section>
+
+    {% with folder_dialog_title="Choose import folder" %}{% include "_folder_dialog.html" %}{% endwith %}
+  </main>
+  <script src="{{ url_for('static', filename='js/folder-picker.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/export-folder.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/universities.js') }}"></script>
+</body>
+</html>

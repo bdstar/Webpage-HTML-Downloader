@@ -8,6 +8,11 @@
 </head>
 <body>
   <main class="container">
+    <nav class="topnav">
+      <a href="{{ url_for('index') }}" aria-current="page">Webpage downloader</a>
+      <a href="{{ url_for('programmes.dashboard') }}">Programme importer</a>
+      <a href="{{ url_for('universities.dashboard') }}">Universities importer</a>
+    </nav>
     <header>
       <h1>Webpage HTML Downloader</h1>
       <p class="subtitle">Save the HTML source of a public webpage to your computer.</p>
@@ -15,10 +20,17 @@
 
     <form id="download-form" class="card" novalidate>
       <label for="url-input">Webpage URL</label>
-      <div class="input-row">
-        <input id="url-input" name="url" type="url" inputmode="url" autocomplete="url"
-               placeholder="https://example.com/page" required spellcheck="false">
-        <button id="download-btn" type="submit" class="btn primary">Download</button>
+      <p class="muted small field-hint">One URL per line, or upload a .txt file with one URL per line.
+        Empty lines and lines starting with # are ignored.</p>
+      <div class="input-row url-row">
+        <textarea id="url-input" name="url" rows="4" inputmode="url" autocomplete="off" required spellcheck="false"
+                  placeholder="https://example.com/page&#10;https://example.com/another-page"></textarea>
+        <div class="url-buttons">
+          <button id="download-btn" type="submit" class="btn primary">Download</button>
+          <label class="btn secondary file-btn" for="url-file">Upload .txt
+            <input id="url-file" type="file" accept=".txt,text/plain" hidden>
+          </label>
+        </div>
       </div>
 
       <fieldset class="modes">
@@ -36,8 +48,51 @@
           </span>
         </label>
       </fieldset>
+
+      <div class="location">
+        <label for="download-interval">Download Interval Duration</label>
+        <div class="input-row interval-row">
+          <input id="download-interval" type="number" min="0" max="3600" step="0.5" value="2" inputmode="decimal">
+          <span class="interval-unit">seconds</span>
+        </div>
+        <p class="muted small field-hint">When several URLs are downloaded, they run one at a time, and the app
+          waits this long after each download finishes before starting the next (0 to 3600 seconds).</p>
+      </div>
+
+      <div class="location">
+        <label for="download-dir">Browse Location</label>
+        <div class="input-row">
+          <input id="download-dir" type="text" spellcheck="false" autocomplete="off"
+                 value="{{ app_config.download_dir }}" data-default="{{ app_config.download_dir }}"
+                 {% if not app_config.folder_selection %}disabled{% endif %}>
+          <button id="browse-btn" type="button" class="btn secondary"
+                  {% if not app_config.folder_selection %}disabled{% endif %}>Browse…</button>
+          <button id="reset-dir-btn" type="button" class="btn secondary"
+                  {% if not app_config.folder_selection %}disabled{% endif %}>Default</button>
+        </div>
+        <p class="muted small field-hint">
+          {% if app_config.folder_selection %}Folder where the downloaded HTML files are saved.
+          {% else %}Files are saved to the folder above. Choosing another folder is only possible on the computer
+          running the app.{% endif %}
+        </p>
+      </div>
       <p id="field-error" class="field-error" role="alert" hidden></p>
     </form>
+
+    <section id="batch-card" class="card" hidden>
+      <div class="status-row batch-head">
+        <h2 id="batch-title">URL preview</h2>
+        <span id="batch-summary" class="status-message"></span>
+        <span class="spacer"></span>
+        <button id="batch-cancel-btn" type="button" class="btn secondary small-btn" hidden>Cancel all</button>
+        <button id="batch-clear-btn" type="button" class="btn secondary small-btn">Clear</button>
+      </div>
+      <div id="batch-overall" class="progress-track" role="progressbar" aria-label="Overall progress"
+           aria-valuemin="0" aria-valuemax="100"><div class="progress-fill"></div></div>
+      <ol id="batch-list" class="batch-list"></ol>
+    </section>
+
+    {% with folder_dialog_title="Choose download folder" %}{% include "_folder_dialog.html" %}{% endwith %}
 
     <section id="progress-card" class="card" hidden aria-live="polite">
       <div class="status-row">
@@ -95,6 +150,8 @@
       </p>
     </aside>
   </main>
+  <script>window.APP_CONFIG = {{ app_config | tojson }};</script>
+  <script src="{{ url_for('static', filename='js/folder-picker.js') }}"></script>
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

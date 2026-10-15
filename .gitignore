@@ -4,3 +4,8 @@ __pycache__/
 .venv/
 downloads/*
 !downloads/.gitkeep
+# Programme importer runtime data: task database, pages waiting to import, generated datasets
+data/
+imports/
+UK/
+export/

@@ -1,0 +1,20 @@
+    <dialog id="folder-dialog" class="folder-dialog">
+      <form method="dialog" class="folder-form">
+        <h2>{{ folder_dialog_title }}</h2>
+        <div class="folder-path-row">
+          <button type="button" id="folder-up" class="btn secondary small-btn" title="Parent folder">↑ Up</button>
+          <button type="button" id="folder-drives" class="btn secondary small-btn">Drives</button>
+          <span id="folder-current" class="path"></span>
+        </div>
+        <ul id="folder-list" class="folder-list"></ul>
+        <div class="input-row folder-new">
+          <input id="folder-new-name" type="text" placeholder="New folder name" spellcheck="false">
+          <button type="button" id="folder-create" class="btn secondary small-btn">Create folder</button>
+        </div>
+        <p id="folder-error" class="field-error small" hidden></p>
+        <div class="dialog-actions">
+          <button type="submit" value="cancel" class="btn secondary">Cancel</button>
+          <button type="button" id="folder-select" class="btn primary">Use this folder</button>
+        </div>
+      </form>
+    </dialog>

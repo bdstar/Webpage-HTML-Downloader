@@ -40,6 +40,7 @@
   }
 
   function showFieldError(msg) {
+    fieldError.classList.remove("note-text");
     fieldError.textContent = msg;
     fieldError.hidden = !msg;
   }
@@ -182,27 +183,390 @@
     return checked ? checked.value : "http";
   }
 
+  // --- download folder ("Browse Location") -------------------------------------------------------
+
+  const DIR_KEY = "html-downloader-dir";
+  const dirInput = $("download-dir");
+
+  if (!dirInput.disabled && localStorage.getItem(DIR_KEY)) dirInput.value = localStorage.getItem(DIR_KEY);
+
+  /** Folder to send with a job; empty means "the server's default folder". */
+  function chosenDir() {
+    if (dirInput.disabled) return "";
+    const value = dirInput.value.trim();
+    return value === dirInput.dataset.default ? "" : value;
+  }
+
+  function rememberDir() {
+    const value = dirInput.value.trim();
+    if (value && value !== dirInput.dataset.default) localStorage.setItem(DIR_KEY, value);
+    else localStorage.removeItem(DIR_KEY);
+  }
+
+  $("browse-btn").addEventListener("click", () => {
+    FolderPicker.choose(dirInput.value.trim() || dirInput.dataset.default, (path) => {
+      dirInput.value = path;
+      rememberDir();
+    });
+  });
+  $("reset-dir-btn").addEventListener("click", () => {
+    dirInput.value = dirInput.dataset.default;
+    rememberDir();
+  });
+  dirInput.addEventListener("change", rememberDir);
+
+  // --- URL list, .txt upload and preview/queue ---------------------------------------------------
+
+  const BATCH_KEY = "html-downloader-batch";
+  const MAX_URLS = 1000;
+  const BATCH_POLL_MS = 700;
+  const RETRY_BUSY_MS = 2000;
+  const BUSY_STATES = new Set(["queued", "starting", "running"]);
+  const batchCard = $("batch-card");
+  const batchList = $("batch-list");
+  const batchOverall = $("batch-overall");
+  const batchCancelBtn = $("batch-cancel-btn");
+  const batchClearBtn = $("batch-clear-btn");
+  const fileInput = $("url-file");
+  const INTERVAL_KEY = "html-downloader-interval";
+  const DEFAULT_INTERVAL_S = 2;
+  const MAX_INTERVAL_S = 3600;
+  const intervalInput = $("download-interval");
+  if (localStorage.getItem(INTERVAL_KEY) !== null) intervalInput.value = localStorage.getItem(INTERVAL_KEY);
+  let batch = null;      // { source, rows: [{ url, state, jobId, percent, stage, bytes, error, filename, path }] }
+  let batchTimer = null;
+  let previewTimer = null;
+
+  /** Pause between downloads in a multi-URL batch, read live so edits apply to the running batch. */
+  function intervalMs() {
+    const value = Number(intervalInput.value);
+    if (intervalInput.value.trim() === "" || !Number.isFinite(value)) return DEFAULT_INTERVAL_S * 1000;
+    return Math.min(Math.max(value, 0), MAX_INTERVAL_S) * 1000;
+  }
+
+  intervalInput.addEventListener("change", () => {
+    const value = Number(intervalInput.value);
+    if (intervalInput.value.trim() === "" || !Number.isFinite(value) || value < 0) {
+      intervalInput.value = String(DEFAULT_INTERVAL_S);
+    } else if (value > MAX_INTERVAL_S) {
+      intervalInput.value = String(MAX_INTERVAL_S);
+    }
+    localStorage.setItem(INTERVAL_KEY, intervalInput.value);
+  });
+
+  const looksLikeHttp = (url) => !/^[a-z][a-z0-9+.-]*:/i.test(url) || /^https?:\/\//i.test(url);
+
+  function parseUrls(text) {
+    const seen = new Set();
+    const urls = [];
+    let duplicates = 0;
+    for (const raw of text.split(/\r?\n/)) {
+      const url = raw.trim();
+      if (!url || url.startsWith("#")) continue;
+      if (seen.has(url)) { duplicates++; continue; }
+      seen.add(url);
+      urls.push(url);
+    }
+    return { urls: urls.slice(0, MAX_URLS), duplicates, overflow: Math.max(0, urls.length - MAX_URLS) };
+  }
+
+  function rowStatus(row) {
+    switch (row.state) {
+      case "pending": return ["Not initiated", ""];
+      case "queued": return ["Queued", ""];
+      case "starting": return ["Starting…", "indeterminate"];
+      case "running":
+        if (row.percent !== null && row.percent !== undefined) {
+          return [`Download progress (${Math.floor(row.percent)}%)`, ""];
+        }
+        return [`Download progress (${row.stage || "working"}${row.bytes ? `, ${formatBytes(row.bytes)}` : ""})`,
+          "indeterminate"];
+      case "completed": return ["Download Complete", "completed"];
+      case "cancelled": return ["Cancelled", "cancelled"];
+      case "invalid": return ["Skipped: only http:// and https:// URLs are supported", "failed"];
+      default: return [`Failed: ${row.error || "unknown error"}`, "failed"];
+    }
+  }
+
+  function buildRowElement(row, index) {
+    const li = document.createElement("li");
+    li.className = "batch-row";
+    li.innerHTML = `<div class="row-main"><span class="row-index"></span><span class="row-url path"></span>
+      <span class="row-status"></span><a class="row-save small" hidden>Save</a></div>
+      <div class="progress-track mini"><div class="progress-fill"></div></div>`;
+    li.querySelector(".row-index").textContent = `${index + 1}.`;
+    li.querySelector(".row-url").textContent = row.url;
+    return li;
+  }
+
+  function updateRow(row, li) {
+    let [text, cls] = rowStatus(row);
+    let stateClass = row.state;
+    const waitMs = batch.nextStartAt ? batch.nextStartAt - Date.now() : 0;
+    if (row.state === "queued" && waitMs > 0 && row === batch.rows.find((r) => r.state === "queued")) {
+      text = `Waiting ${Math.ceil(waitMs / 1000)}s before starting`;
+      stateClass = "waiting";
+    }
+    const status = li.querySelector(".row-status");
+    status.textContent = text;
+    status.className = `row-status ${stateClass}`;
+    li.title = row.path ? `Saved to ${row.path}` : (row.error || "");
+    const track = li.querySelector(".progress-track");
+    track.className = `progress-track mini ${cls}`;
+    const fillEl = track.firstElementChild;
+    if (row.state === "completed" || row.state === "failed" || row.state === "cancelled" || row.state === "invalid") {
+      fillEl.style.width = "100%";
+    } else if (row.state === "running" && row.percent != null) {
+      fillEl.style.width = `${row.percent}%`;
+    } else {
+      fillEl.style.width = cls === "indeterminate" ? "" : "0";
+    }
+    const save = li.querySelector(".row-save");
+    save.hidden = row.state !== "completed";
+    if (row.state === "completed") {
+      save.href = `/api/jobs/${encodeURIComponent(row.jobId)}/file`;
+      save.setAttribute("download", row.filename || "");
+    }
+  }
+
+  function renderBatch(rebuild) {
+    if (!batch) { batchCard.hidden = true; return; }
+    batchCard.hidden = false;
+    if (rebuild) batchList.replaceChildren(...batch.rows.map(buildRowElement));
+    batch.rows.forEach((row, i) => updateRow(row, batchList.children[i]));
+
+    const count = (s) => batch.rows.filter((r) => r.state === s).length;
+    const invalid = count("invalid");
+    const total = batch.rows.length - invalid;   // URLs that can actually be downloaded
+    const done = count("completed");
+    const failed = count("failed");
+    const cancelled = count("cancelled");
+    const finished = done + failed + cancelled;
+    const busy = batch.rows.some((r) => BUSY_STATES.has(r.state));
+    $("batch-title").textContent = `URL preview — ${batch.rows.length} URL${batch.rows.length === 1 ? "" : "s"}` +
+      (batch.source ? ` from ${batch.source}` : "");
+    const skipped = invalid ? ` · ${invalid} skipped (not http/https)` : "";
+    $("batch-summary").textContent = (busy || finished
+      ? `${done} complete, ${failed} failed${cancelled ? `, ${cancelled} cancelled` : ""}, ` +
+        `${total - finished} remaining` + (batch.dir ? ` · saving to ${batch.dir}` : "")
+      : "Press Download to start.") + skipped;
+    const fillEl = batchOverall.firstElementChild;
+    fillEl.style.width = `${total ? (finished * 100) / total : 0}%`;
+    batchOverall.setAttribute("aria-valuenow", String(total ? Math.round((finished * 100) / total) : 0));
+    batchOverall.className = `progress-track${!busy && finished === total && total ? (failed ? " failed" : " completed") : ""}`;
+    batchCancelBtn.hidden = !busy;
+    batchClearBtn.disabled = busy;
+    if (!currentJobId) {
+      downloadBtn.disabled = busy;
+      urlInput.readOnly = busy;
+      downloadBtn.textContent = busy ? "Downloading..." : (total > 1 ? `Download all (${total})` : "Download");
+    }
+  }
+
+  function saveBatch() {
+    if (batch) sessionStorage.setItem(BATCH_KEY, JSON.stringify(batch));
+    else sessionStorage.removeItem(BATCH_KEY);
+  }
+
+  function showPreview(urls, source) {
+    batch = { source, rows: urls.map((url) => ({ url, state: looksLikeHttp(url) ? "pending" : "invalid" })) };
+    renderBatch(true);
+    saveBatch();
+  }
+
+  function applyJob(row, job) {
+    row.jobId = job.id;
+    row.state = job.status;
+    row.percent = job.percent;
+    row.stage = job.stage_label;
+    row.bytes = job.bytes_downloaded;
+    row.error = job.error;
+    row.filename = job.filename;
+    row.path = job.file_path;
+  }
+
+  async function startRow(row) {
+    row.state = "starting";
+    try {
+      const res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: row.url, mode: batch.mode, download_dir: batch.dirParam }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 202 || (res.status === 409 && data.job)) {
+        applyJob(row, data.job);
+      } else if (res.status === 429) {
+        row.state = "queued";           // server is at its job limit; try again shortly
+        row.retryAt = Date.now() + RETRY_BUSY_MS;
+      } else {
+        row.state = "failed";
+        row.error = data.error || `Request failed (HTTP ${res.status}).`;
+      }
+    } catch (_) {
+      row.state = "failed";
+      row.error = "Could not reach the downloader app. Is the server running?";
+    }
+    saveBatch();
+    renderBatch(false);
+  }
+
+  /** Start the next queued URL: one download at a time, after the configured pause. */
+  function pump() {
+    if (!batch) return;
+    if (batch.rows.some((r) => r.state === "starting" || r.state === "running")) return;
+    const now = Date.now();
+    if (batch.nextStartAt && now < batch.nextStartAt) return;
+    const next = batch.rows.find((r) => r.state === "queued" && !(r.retryAt > now));
+    if (next) startRow(next);
+  }
+
+  async function pollBatch() {
+    batchTimer = null;
+    if (!batch) return;
+    const running = batch.rows.filter((r) => r.state === "running" && r.jobId);
+    await Promise.all(running.map(async (row) => {
+      try {
+        const res = await fetch(`/api/jobs/${encodeURIComponent(row.jobId)}`, { cache: "no-store" });
+        if (res.status === 404) {
+          row.state = "failed";
+          row.error = "The server no longer knows this download (it may have restarted).";
+          return;
+        }
+        if (res.ok) {
+          applyJob(row, (await res.json()).job);
+          if (FINAL.has(row.state)) batch.nextStartAt = Date.now() + intervalMs();
+        }
+      } catch (_) { /* transient: keep polling */ }
+    }));
+    pump();
+    saveBatch();
+    renderBatch(false);
+    if (batch.rows.some((r) => BUSY_STATES.has(r.state))) {
+      const waitMs = batch.nextStartAt ? batch.nextStartAt - Date.now() : 0;
+      const delay = waitMs > 0 ? Math.min(BATCH_POLL_MS, waitMs + 20) : BATCH_POLL_MS;
+      batchTimer = setTimeout(pollBatch, delay);
+    }
+  }
+
+  function startBatch(urls, source) {
+    const same = batch && batch.rows.length === urls.length && batch.rows.every((r, i) => r.url === urls[i]);
+    if (!same) showPreview(urls, source);
+    batch.mode = selectedMode();
+    batch.nextStartAt = 0;
+    batch.dirParam = chosenDir();
+    batch.dir = dirInput.disabled ? "" : dirInput.value.trim();
+    // Start everything not yet downloaded; completed rows are kept, failed/cancelled ones are retried.
+    for (const row of batch.rows) {
+      if (["pending", "failed", "cancelled"].includes(row.state)) {
+        Object.assign(row, { state: "queued", error: null, percent: null, bytes: 0, retryAt: 0 });
+      }
+    }
+    errorCard.hidden = true;
+    resultCard.hidden = true;
+    progressCard.hidden = true;
+    renderBatch(false);
+    saveBatch();
+    if (!batchTimer) pollBatch();
+  }
+
+  batchCancelBtn.addEventListener("click", async () => {
+    if (!batch) return;
+    batchCancelBtn.disabled = true;
+    for (const row of batch.rows) if (row.state === "queued") row.state = "pending";
+    await Promise.all(batch.rows.filter((r) => r.state === "running" && r.jobId).map((row) =>
+      fetch(`/api/jobs/${encodeURIComponent(row.jobId)}/cancel`, { method: "POST" }).catch(() => null)));
+    batchCancelBtn.disabled = false;
+    renderBatch(false);
+    saveBatch();
+  });
+
+  batchClearBtn.addEventListener("click", () => {
+    batch = null;
+    saveBatch();
+    renderBatch(true);
+    urlInput.value = "";
+    downloadBtn.textContent = "Download";
+    urlInput.focus();
+  });
+
+  urlInput.addEventListener("input", () => {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      if (batch && batch.rows.some((r) => BUSY_STATES.has(r.state))) return;
+      const { urls } = parseUrls(urlInput.value);
+      if (urls.length > 1) {
+        showPreview(urls, null);
+      } else {
+        batch = null;
+        saveBatch();
+        renderBatch(true);
+        downloadBtn.textContent = "Download";
+      }
+    }, 300);
+  });
+
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    fileInput.value = "";  // allow choosing the same file again
+    if (!file) return;
+    showFieldError("");
+    if (batch && batch.rows.some((r) => BUSY_STATES.has(r.state))) {
+      showFieldError("Wait for the current downloads to finish (or cancel them) before loading another file.");
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      showFieldError("The .txt file is larger than 1 MB; split it into smaller files.");
+      return;
+    }
+    const { urls, duplicates, overflow } = parseUrls(await file.text());
+    if (!urls.length) {
+      showFieldError(`${file.name} does not contain any URLs (one per line).`);
+      return;
+    }
+    urlInput.value = urls.join("\n");
+    showPreview(urls, file.name);
+    const notes = [];
+    if (duplicates) notes.push(`${duplicates} duplicate line(s) removed`);
+    if (overflow) notes.push(`only the first ${MAX_URLS} URLs were loaded (${overflow} more ignored)`);
+    if (notes.length) {
+      showFieldError(`Note: ${notes.join("; ")}.`);
+      fieldError.classList.add("note-text");
+    }
+  });
+
+  // --- submit --------------------------------------------------------------------------------------
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (downloadBtn.disabled) return;  // guard against double submission
     showFieldError("");
-    const url = urlInput.value.trim();
-    if (!url) {
+    const { urls, overflow } = parseUrls(urlInput.value);
+    if (!urls.length) {
       showFieldError("Please enter a URL, for example https://example.com.");
       urlInput.focus();
       return;
     }
-    if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^https?:\/\//i.test(url)) {
+    if (overflow) showFieldError(`Only the first ${MAX_URLS} URLs will be downloaded.`);
+    if (urls.length > 1 || (batch && batch.source)) {
+      startBatch(urls, batch && batch.source);
+      return;
+    }
+    const url = urls[0];
+    if (!looksLikeHttp(url)) {
       showFieldError("Only http:// and https:// URLs are supported.");
       return;
     }
+    batch = null;
+    saveBatch();
+    renderBatch(true);
 
     downloadBtn.disabled = true;
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, mode: selectedMode() }),
+        body: JSON.stringify({ url, mode: selectedMode(), download_dir: chosenDir() }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 202) {
@@ -246,4 +610,18 @@
       .catch(() => sessionStorage.removeItem(STORAGE_KEY));
   }
   setBusy(false);
+
+  // Restore a URL list/queue after a page reload; running downloads continue on the server.
+  try {
+    const savedBatch = JSON.parse(sessionStorage.getItem(BATCH_KEY) || "null");
+    if (savedBatch && Array.isArray(savedBatch.rows)) {
+      batch = savedBatch;
+      for (const row of batch.rows) if (row.state === "starting") row.state = "queued";
+      if (!urlInput.value) urlInput.value = batch.rows.map((r) => r.url).join("\n");
+      renderBatch(true);
+      if (batch.rows.some((r) => BUSY_STATES.has(r.state))) pollBatch();
+    }
+  } catch (_) {
+    sessionStorage.removeItem(BATCH_KEY);
+  }
 })();

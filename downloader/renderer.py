@@ -13,6 +13,7 @@ from .config import Settings
 from .errors import BlockedDestinationError, CancelledError, DownloadError, InvalidURLError
 from .fetcher import format_bytes, http_status_error, translate_exception
 from .filenames import build_filename, finalize_file
+from .integrity import check_final_url, check_page_number
 from .jobs import Job
 from .security import resolve_and_check, validate_url
 
@@ -138,6 +139,8 @@ def run_rendered_download(job: Job, settings: Settings) -> None:
                 f"{format_bytes(settings.max_download_bytes)} limit.", code="too_large")
         if not html.strip():
             raise DownloadError("The rendered page is empty.", code="empty_response")
+        check_final_url(job.url, final_url)
+        check_page_number(job.url, html)
         job.set_progress(len(data), None)
 
         job.set_stage("saving", "Saving rendered HTML...")

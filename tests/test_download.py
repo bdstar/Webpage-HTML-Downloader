@@ -205,6 +205,41 @@ def test_redirect_loop(server, settings):
     assert job.status == "failed" and job.error_code == "too_many_redirects"
 
 
+@pytest.mark.parametrize("page", ["5", "6"])
+def test_requested_pagination_page_is_saved(server, settings, page):
+    job = download(f"{server}/listing?page={page}", settings)
+    assert job.status == "completed", job.error
+    assert f'data-current-page="{page}"' in open(job.file_path, encoding="utf-8").read()
+
+
+def test_redirect_that_drops_page_parameter_fails(server, settings):
+    job = download(server + "/listing-redirect?page=5", settings)
+    assert job.status == "failed" and job.error_code == "content_mismatch"
+    assert "page=5" in job.error and "Nothing was saved" in job.error
+    assert_no_files(settings)
+
+
+def test_site_serving_a_different_page_fails(server, settings):
+    job = download(server + "/listing-first-only?page=5", settings)
+    assert job.status == "failed" and job.error_code == "content_mismatch"
+    assert "asked for page 5" in job.error and "returned page 1" in job.error
+    assert_no_files(settings)
+
+
+def test_studyportals_mismatch_explains_manual_save():
+    from downloader.integrity import check_final_url
+
+    with pytest.raises(Exception) as exc:
+        check_final_url("https://www.mastersportal.com/search/master/united-kingdom?page=5",
+                        "https://www.mastersportal.com/search/master/united-kingdom?bot=true")
+    assert "Ctrl+S" in str(exc.value) and "page=5" in str(exc.value)
+
+
+def test_extra_parameters_added_by_redirect_are_fine(server, settings):
+    job = download(server + "/redirect-ok", settings)
+    assert job.status == "completed"
+
+
 def test_loopback_blocked_without_allowlist(server, tmp_path):
     job = download(server + "/page", Settings(download_dir=tmp_path / "d", allowed_ports=None))
     assert job.status == "failed"

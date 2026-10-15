@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from dataclasses import replace
+from pathlib import Path
 from typing import Callable
 
 from .config import Settings
@@ -45,10 +47,12 @@ def calculate_percent(downloaded: int, total: int | None) -> float | None:
 
 
 class Job:
-    def __init__(self, url: str, mode: str, cond: threading.Condition | None = None):
+    def __init__(self, url: str, mode: str, cond: threading.Condition | None = None,
+                 download_dir: Path | None = None):
         self.id = uuid.uuid4().hex
         self.url = url
         self.mode = mode
+        self.download_dir = download_dir
         self.created_at = time.time()
         self.finished_at: float | None = None
         self.status = "running"
@@ -170,6 +174,7 @@ class Job:
             "filename": self.filename,
             "file_size": self.file_size,
             "file_path": self.file_path,
+            "download_dir": str(self.download_dir) if self.download_dir else None,
             "error": self.error,
             "error_code": self.error_code,
             "http_status": self.http_status,
@@ -192,7 +197,7 @@ class JobManager:
         self._jobs: dict[str, Job] = {}
         self._cond = threading.Condition(threading.RLock())
 
-    def start(self, url: str, mode: str) -> Job:
+    def start(self, url: str, mode: str, download_dir: Path | None = None) -> Job:
         with self._cond:
             for job in self._jobs.values():
                 if job.is_active and job.key == (url, mode):
@@ -202,7 +207,7 @@ class JobManager:
                 raise TooManyJobsError(
                     f"Too many downloads are running ({active}). Wait for one to finish and try again."
                 )
-            job = Job(url, mode, self._cond)
+            job = Job(url, mode, self._cond, download_dir or self.settings.download_dir)
             self._jobs[job.id] = job
             self._prune()
         thread = threading.Thread(target=self._run, args=(job,), name=f"job-{job.id[:8]}", daemon=True)
@@ -211,8 +216,11 @@ class JobManager:
 
     def _run(self, job: Job) -> None:
         runner = self.runners[job.mode]
+        settings = self.settings
+        if job.download_dir and job.download_dir != settings.download_dir:
+            settings = replace(settings, download_dir=job.download_dir)
         try:
-            runner(job, self.settings)
+            runner(job, settings)
         except Exception as exc:  # runners report expected errors themselves
             if job.is_active:
                 job.fail(f"Unexpected error: {exc}", "internal_error")

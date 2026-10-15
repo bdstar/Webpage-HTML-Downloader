@@ -97,6 +97,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(302, b"", headers={"Location": "file:///etc/passwd"})
         elif path == "/redirect-loop":
             self._send(302, b"", headers={"Location": "/redirect-loop"})
+        elif path in ("/listing", "/listing-first-only"):
+            query = dict(p.split("=", 1) for p in self.path.partition("?")[2].split("&") if "=" in p)
+            page = query.get("page", "1") if path == "/listing" else "1"
+            body = f'<html><body><nav class="Pagination" data-current-page="{page}"></nav></body></html>'
+            self._send(200, body.encode())
+        elif path == "/listing-redirect":
+            self._send(302, b"", headers={"Location": "/listing?bot=true"})
         else:
             self._send(404, b"not found")
 

@@ -66,6 +66,8 @@ class Settings:
     enable_browser_rendering: bool = False
     render_timeout: float = 45.0
     render_idle_timeout: float = 10.0
+    # Let non-local browsers browse server folders and choose where files are saved. Keep off if shared.
+    allow_remote_folder_selection: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -84,4 +86,5 @@ class Settings:
             enable_browser_rendering=_env_bool("ENABLE_BROWSER_RENDERING", False),
             render_timeout=_env_float("RENDER_TIMEOUT", 45.0),
             render_idle_timeout=_env_float("RENDER_IDLE_TIMEOUT", 10.0),
+            allow_remote_folder_selection=_env_bool("ALLOW_REMOTE_FOLDER_SELECTION", False),
         )

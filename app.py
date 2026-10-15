@@ -21,15 +21,25 @@ from downloader import (
     TooManyJobsError,
 )
 from downloader.fetcher import run_http_download
+from downloader.folders import FolderError, create_folder, list_folders, validate_download_dir
 from downloader.jobs import FINAL_STATUSES, MODE_HTTP, MODE_RENDERED, MODES
 from downloader.renderer import playwright_installed, rendering_available, run_rendered_download
 from downloader.security import validate_url
+from programmes.config import ImportSettings
+from programmes.tasks import ImportManager
+from programmes.web import bp as programmes_bp
+from universities.config import UniversitySettings
+from universities.tasks import UniversityImportManager
+from universities.web import bp as universities_bp
 
 SSE_KEEPALIVE_SECONDS = 15.0
 SSE_MIN_INTERVAL_SECONDS = 0.1
+LOCAL_ADDRESSES = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 
-def create_app(settings: Settings | None = None, manager: JobManager | None = None) -> Flask:
+def create_app(settings: Settings | None = None, manager: JobManager | None = None,
+               import_manager: ImportManager | None = None,
+               university_manager: UniversityImportManager | None = None) -> Flask:
     settings = settings or Settings.from_env()
     settings.download_dir.mkdir(parents=True, exist_ok=True)
     manager = manager or JobManager(
@@ -39,9 +49,21 @@ def create_app(settings: Settings | None = None, manager: JobManager | None = No
     app.config["SETTINGS"] = settings
     app.config["JOB_MANAGER"] = manager
     app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
+    app.config["IMPORT_MANAGER"] = import_manager
+    app.config["IMPORT_MANAGER_FACTORY"] = lambda: ImportManager(ImportSettings.from_env())
+    app.config["UNIVERSITY_MANAGER"] = university_manager
+    app.config["UNIVERSITY_MANAGER_FACTORY"] = lambda: UniversityImportManager(UniversitySettings.from_env())
+    app.register_blueprint(programmes_bp)
+    app.register_blueprint(universities_bp)
 
     def error_response(message: str, status: int, code: str, **extra):
         return jsonify({"error": message, "code": code, **extra}), status
+
+    def folder_selection_allowed() -> bool:
+        """Choosing/browsing folders exposes the server's file system, so only the local user may do it."""
+        return settings.allow_remote_folder_selection or request.remote_addr in LOCAL_ADDRESSES
+
+    app.config["FOLDER_SELECTION_ALLOWED"] = folder_selection_allowed
 
     def client_config() -> dict:
         return {
@@ -50,7 +72,31 @@ def create_app(settings: Settings | None = None, manager: JobManager | None = No
             "render_enabled": settings.enable_browser_rendering,
             "max_download_bytes": settings.max_download_bytes,
             "download_dir": str(settings.download_dir),
+            "folder_selection": folder_selection_allowed(),
+            "max_active_jobs": settings.max_active_jobs,
         }
+
+    @app.get("/api/folders")
+    def browse_folders():
+        if not folder_selection_allowed():
+            return error_response("Folder selection is only available on the computer running the app.",
+                                  403, "folder_selection_disabled")
+        try:
+            return jsonify(list_folders(request.args.get("path")))
+        except FolderError as exc:
+            return error_response(exc.message, 400, exc.code)
+
+    @app.post("/api/folders")
+    def make_folder():
+        if not folder_selection_allowed():
+            return error_response("Folder selection is only available on the computer running the app.",
+                                  403, "folder_selection_disabled")
+        payload = request.get_json(silent=True) or {}
+        try:
+            path = create_folder(payload.get("parent"), payload.get("name"))
+        except FolderError as exc:
+            return error_response(exc.message, 400, exc.code)
+        return jsonify({"path": str(path)}), 201
 
     @app.get("/")
     def index():
@@ -74,8 +120,18 @@ def create_app(settings: Settings | None = None, manager: JobManager | None = No
             url = validate_url(payload.get("url", ""), settings)
         except (InvalidURLError, BlockedDestinationError) as exc:
             return error_response(exc.message, 400, exc.code)
+        download_dir = None
+        raw_dir = (payload.get("download_dir") or "").strip()
+        if raw_dir:
+            if not folder_selection_allowed():
+                return error_response("Choosing a download folder is only available on the computer running "
+                                      "the app.", 403, "folder_selection_disabled")
+            try:
+                download_dir = validate_download_dir(raw_dir)
+            except FolderError as exc:
+                return error_response(exc.message, 400, exc.code)
         try:
-            job = manager.start(url, mode)
+            job = manager.start(url, mode, download_dir)
         except DuplicateJobError as exc:
             return error_response(str(exc), 409, "duplicate_job", job=exc.job.snapshot())
         except TooManyJobsError as exc:
@@ -133,7 +189,8 @@ def create_app(settings: Settings | None = None, manager: JobManager | None = No
         if job.status != "completed" or not job.file_path:
             return error_response("The file is not ready yet.", 409, "not_ready")
         path = Path(job.file_path).resolve()
-        if path.parent != settings.download_dir.resolve() or not path.is_file():
+        expected_dir = Path(job.download_dir or settings.download_dir).resolve()
+        if path.parent != expected_dir or not path.is_file():
             return error_response("The saved file no longer exists.", 410, "file_missing")
         return send_file(path, mimetype="text/html", as_attachment=True, download_name=job.filename)
 

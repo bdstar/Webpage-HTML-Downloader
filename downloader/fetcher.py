@@ -19,6 +19,7 @@ from urllib3.exceptions import (
 from .config import Settings
 from .errors import BlockedDestinationError, CancelledError, DownloadError, InvalidURLError
 from .filenames import build_filename, finalize_file
+from .integrity import check_final_url, check_page_number
 from .jobs import Job
 from .security import build_safe_session, validate_url
 
@@ -177,6 +178,7 @@ def run_http_download(job: Job, settings: Settings) -> None:
         settings.download_dir.mkdir(parents=True, exist_ok=True)
         response, final_url = _open_response(session, job, settings)
         with response:
+            check_final_url(job.url, final_url)
             if response.status_code >= 400 and is_bot_challenge(response):
                 raise bot_challenge_error(response.status_code, settings)
             if response.status_code >= 400:
@@ -237,6 +239,7 @@ def run_http_download(job: Job, settings: Settings) -> None:
                     f"{format_bytes(total)}. No partial file was kept.", code="interrupted")
             if written == 0:
                 raise DownloadError("The website returned an empty page (0 bytes).", code="empty_response")
+        check_page_number(job.url, temp_path.read_text(encoding="utf-8", errors="replace"))
 
         job.set_stage("saving", "Saving file...")
         filename = build_filename(final_url)

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Programme Importer — Global Study Net</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <main class="container wide">
+    <nav class="topnav">
+      <a href="{{ url_for('index') }}">Webpage downloader</a>
+      <a href="{{ url_for('programmes.dashboard') }}" aria-current="page">Programme importer</a>
+      <a href="{{ url_for('universities.dashboard') }}">Universities importer</a>
+    </nav>
+    <header>
+      <h1>Programme Importer</h1>
+      <p class="subtitle">Build UK Master's and Bachelor's programme datasets from pages you save while browsing
+        Mastersportal and Bachelorsportal.</p>
+    </header>
+
+    <section class="card note">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li>Open the listing pages and programme pages in your normal browser (lists of pages still to save are below).</li>
+        <li>Save each one with <kbd>Ctrl</kbd>+<kbd>S</kbd> into the import folder for its category.</li>
+        <li>Press <strong>Start import</strong>. Listing pages are processed first, then programme pages; results are
+          written to one JSON file per university in the export folder (by default
+          <span class="path">UK/&lt;category&gt;/programs</span>).</li>
+      </ol>
+      <p class="muted small">The importer never contacts the portals. Mastersportal and Bachelorsportal block automated
+        access, and this tool does not try to get around that: pages showing a Cloudflare or CAPTCHA check are
+        reported as <em>blocked</em> and must be saved again from a normal browser session.</p>
+    </section>
+
+    <form id="start-form" class="card" novalidate>
+      <h2>Start an import</h2>
+      <div class="form-grid">
+        <label for="category">Programme category</label>
+        <select id="category" name="category">
+          <option value="master">Master's (mastersportal.com)</option>
+          <option value="bachelor">Bachelor's (bachelorsportal.com)</option>
+        </select>
+        <label for="folder">Import folder</label>
+        <div class="input-row folder-row">
+          <input id="folder" name="folder" type="text" spellcheck="false" autocomplete="off">
+          <button id="browse-btn" type="button" class="btn secondary"
+                  {% if not folder_selection %}disabled{% endif %}>Browse…</button>
+          <button id="reset-folder-btn" type="button" class="btn secondary">Default</button>
+        </div>
+        <label for="export-folder">Export folder</label>
+        <div class="input-row folder-row">
+          <input id="export-folder" name="export_folder" type="text" spellcheck="false" autocomplete="off"
+                 {% if not folder_selection %}readonly{% endif %}>
+          <button id="export-browse-btn" type="button" class="btn secondary"
+                  {% if not folder_selection %}disabled{% endif %}>Browse…</button>
+          <button id="export-reset-btn" type="button" class="btn secondary">Default</button>
+        </div>
+        <span></span>
+        <p id="export-status" class="small folder-status" aria-live="polite"></p>
+        <span></span>
+        <label class="check"><input id="delete-html" type="checkbox" checked>
+          Delete each HTML file after its data has been saved and verified</label>
+      </div>
+      <div class="actions">
+        <button id="start-btn" type="submit" class="btn primary">Start import</button>
+      </div>
+      <p id="form-error" class="field-error" role="alert" hidden></p>
+    </form>
+
+    <section id="task-card" class="card" aria-live="polite" hidden>
+      <div class="status-row">
+        <h2 id="task-title">Import task</h2>
+        <span id="task-badge" class="badge">Queued</span>
+        <span id="task-stage" class="status-message"></span>
+      </div>
+      <div id="task-track" class="progress-track" role="progressbar" aria-label="Import progress"
+           aria-valuemin="0" aria-valuemax="100"><div id="task-fill" class="progress-fill"></div></div>
+      <div class="progress-meta">
+        <span id="task-percent"></span>
+        <span id="task-timing"></span>
+      </div>
+      <p id="task-action" class="small"></p>
+      <p id="task-error" class="field-error small" hidden></p>
+      <dl class="stats" id="task-stats"></dl>
+      <div class="actions buttons">
+        <button type="button" class="btn secondary" data-action="pause">Pause</button>
+        <button type="button" class="btn secondary" data-action="resume">Resume</button>
+        <button type="button" class="btn secondary" data-action="stop">Stop</button>
+        <button type="button" class="btn secondary" data-action="retry">Retry failed</button>
+        <button type="button" class="btn secondary" id="refresh-btn">Refresh</button>
+        <a class="btn secondary" id="log-json" href="#">Export log (JSON)</a>
+        <a class="btn secondary" id="log-csv" href="#">Export log (CSV)</a>
+      </div>
+      <details id="files-box">
+        <summary>Files in this task</summary>
+        <table class="table" id="files-table">
+          <thead><tr><th>File</th><th>Type</th><th>Status</th><th>Details</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </details>
+      <details id="events-box" open>
+        <summary>Activity log</summary>
+        <ol id="events" class="events"></ol>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="status-row">
+        <h2>Datasets</h2>
+        <button type="button" class="btn secondary small-btn" id="history-btn">View history</button>
+      </div>
+      <div id="datasets" class="datasets"></div>
+    </section>
+
+    <section class="card" id="todo-card">
+      <h2>Pages still to save — <span id="todo-label"></span></h2>
+      <div class="form-grid">
+        <label for="base-url">Listing URL</label>
+        <input id="base-url" type="url" spellcheck="false">
+        <label for="max-page">Maximum page</label>
+        <input id="max-page" type="number" min="1" step="1">
+      </div>
+      <div class="actions"><button type="button" class="btn secondary" id="pages-btn">Show listing pages</button></div>
+      <p id="pages-error" class="field-error" hidden></p>
+      <div class="todo-grid">
+        <div>
+          <h3>Listing pages not yet imported <span id="pages-count" class="muted"></span></h3>
+          <ol id="pages-list" class="links"></ol>
+          <a id="pages-export" class="small" href="#">Download the full list (.txt)</a>
+        </div>
+        <div>
+          <h3>Programmes without a saved programme page <span id="missing-count" class="muted"></span></h3>
+          <ol id="missing-list" class="links"></ol>
+          <a id="missing-export" class="small" href="#">Download the full list (.txt)</a>
+        </div>
+      </div>
+    </section>
+
+    {% with folder_dialog_title="Choose folder" %}{% include "_folder_dialog.html" %}{% endwith %}
+
+    <section class="card" id="history-card" hidden>
+      <h2>Task history</h2>
+      <table class="table">
+        <thead><tr><th>Created</th><th>Category</th><th>Status</th><th>Files</th><th>Programmes</th><th></th></tr></thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='js/folder-picker.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/export-folder.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/programmes.js') }}"></script>
+</body>
+</html>
